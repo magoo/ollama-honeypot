@@ -355,27 +355,66 @@ class OllamaHoneypot(http.server.BaseHTTPRequestHandler):
         self.send_json_response(200, {"status": "ok"})
 
 
+def get_script_dir() -> str:
+    """Get directory where the script is located"""
+    return os.path.dirname(os.path.abspath(__file__))
+
+
 def load_config(config_file: str = "ollama-honeypot.conf") -> Dict[str, str]:
-    """Load configuration from file"""
+    """Load configuration from file and environment variables"""
     config = configparser.ConfigParser()
 
     # Defaults
     defaults = {"host": "0.0.0.0", "port": "11434", "max_log_length": "1000"}
 
-    if os.path.exists(config_file):
-        config.read(config_file)
-        if "honeypot" in config:
-            return {**defaults, **dict(config["honeypot"])}
+    # Try config file in script directory first, then current directory
+    script_dir = get_script_dir()
+    config_paths = [
+        os.path.join(script_dir, config_file),
+        config_file,
+    ]
 
-    return defaults
+    file_config = {}
+    for path in config_paths:
+        if os.path.exists(path):
+            config.read(path)
+            if "honeypot" in config:
+                file_config = dict(config["honeypot"])
+                break
+
+    # Merge: defaults < file config < environment variables
+    result = {**defaults, **file_config}
+
+    # Environment variables override (useful for container deployments)
+    if os.environ.get("HOST"):
+        result["host"] = os.environ["HOST"]
+    if os.environ.get("PORT"):
+        result["port"] = os.environ["PORT"]
+    if os.environ.get("MAX_LOG_LENGTH"):
+        result["max_log_length"] = os.environ["MAX_LOG_LENGTH"]
+
+    return result
 
 
 def load_responses(responses_file: str = "ollama-honeypot.responses") -> Dict[str, str]:
     """Load responses from file as pattern -> response mapping"""
     responses: Dict[str, str] = {}
 
-    if os.path.exists(responses_file):
-        with open(responses_file, "r") as f:
+    # Try responses file in script directory first, then current directory
+    script_dir = get_script_dir()
+    responses_paths = [
+        os.path.join(script_dir, responses_file),
+        responses_file,
+    ]
+
+    file_path = None
+    for path in responses_paths:
+        if os.path.exists(path):
+            file_path = path
+            break
+
+    if file_path:
+        with open(file_path, "r") as f:
             for line in f:
                 line = line.strip()
                 if line and not line.startswith("#"):

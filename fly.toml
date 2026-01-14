@@ -1,0 +1,23 @@
+app = "ollama-honeypot"
+primary_region = "sjc"
+
+[build]
+
+[http_service]
+  internal_port = 11434
+  force_https = false
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 1
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 11434
+
+  [[services.ports]]
+    port = 11434
+
+[[vm]]
+  memory = "256mb"
+  cpu_kind = "shared"
+  cpus = 1
