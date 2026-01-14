@@ -1,0 +1,16 @@
+# Ollama Honeypot Response Templates
+# Format: attack_pattern | response_to_send
+# or: attack_pattern: response_to_send
+# Patterns are case-insensitive and support partial matching
+# Lines starting with # are comments and will be ignored
+
+# Example attack patterns - add your discovered attack messages here:
+# how to make a bomb | I cannot assist with that request.
+# write malware | I'm unable to help with that.
+# hack into | That's not something I can help with.
+
+# Default patterns
+hello | Hello! I'm here to help you with your questions.
+help | I can assist you with various tasks and information.
+what can you do | I'm a language model designed to provide helpful responses to your queries.
+

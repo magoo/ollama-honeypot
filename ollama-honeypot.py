@@ -1,0 +1,433 @@
+#!/usr/bin/env python3
+"""
+Ollama Honeypot - Capture malicious probes targeting exposed Ollama LLM instances
+"""
+
+import http.server
+import json
+import sys
+import datetime
+import configparser
+import random
+import os
+from urllib.parse import urlparse, parse_qs
+from typing import Dict, List, Any, Optional
+import re
+
+
+class OllamaHoneypot(http.server.BaseHTTPRequestHandler):
+    """HTTP handler that mimics Ollama API and logs malicious probes"""
+
+    responses: Dict[str, str] = {}
+    config: Dict[str, str] = {}
+
+    def log_message(self, format: str, *args: Any) -> None:
+        """Override to prevent default logging"""
+        pass
+
+    def sanitize_output(self, text: Any) -> str:
+        """Sanitize output to prevent command injection or terminal escape sequences"""
+        if not isinstance(text, str):
+            text = str(text)
+
+        # Remove control characters except newline/tab
+        sanitized = re.sub(r"[\x00-\x08\x0B-\x0C\x0E-\x1F\x7F-\x9F]", "", text)
+
+        # Remove ANSI escape sequences
+        sanitized = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", sanitized)
+
+        # Replace newlines with spaces for single-line output
+        sanitized = sanitized.replace("\n", " ").replace("\r", " ")
+
+        # Truncate if too long
+        max_length = int(self.config.get("max_log_length", 1000))
+        if len(sanitized) > max_length:
+            sanitized = sanitized[:max_length] + "...[truncated]"
+
+        return sanitized
+
+    def log_request_info(self, body: Optional[str] = None) -> None:
+        """Log request details to STDOUT in single-line format"""
+        timestamp = datetime.datetime.utcnow().isoformat() + "Z"
+        client_ip = self.client_address[0]
+        method = self.command
+        path = self.path
+        headers = dict(self.headers)
+
+        # Sanitize all components
+        log_entry = {
+            "timestamp": timestamp,
+            "client_ip": self.sanitize_output(client_ip),
+            "method": self.sanitize_output(method),
+            "path": self.sanitize_output(path),
+            "user_agent": self.sanitize_output(headers.get("User-Agent", "")),
+            "content_type": self.sanitize_output(headers.get("Content-Type", "")),
+        }
+
+        if body:
+            try:
+                body_json = json.loads(body) if isinstance(body, str) else body
+                log_entry["body"] = self.sanitize_output(json.dumps(body_json))
+            except:
+                log_entry["body"] = self.sanitize_output(str(body))
+
+        # Output single-line JSON
+        print(json.dumps(log_entry), flush=True)
+
+    def get_response_for_query(self, query: str) -> str:
+        """Get response based on query pattern matching"""
+        if not query:
+            return "I'm here to assist you with your queries."
+
+        query_lower = query.lower().strip()
+
+        # Check for exact matches first
+        if query_lower in self.responses:
+            return self.responses[query_lower]
+
+        # Check for partial matches (pattern contains query or query contains pattern)
+        for pattern, response in self.responses.items():
+            if pattern in query_lower or query_lower in pattern:
+                return response
+
+        # Default response if no match found
+        return "I'm here to assist you with your queries."
+
+    def send_json_response(self, status_code: int, data: Dict[str, Any]) -> None:
+        """Send JSON response"""
+        self.send_response(status_code)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps(data).encode())
+
+    def send_text_response(self, status_code: int, text: str) -> None:
+        """Send plain text response"""
+        self.send_response(status_code)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(text)))
+        self.end_headers()
+        self.wfile.write(text.encode())
+
+    def do_GET(self) -> None:
+        """Handle GET requests"""
+        self.log_request_info()
+
+        # Mimic Ollama API endpoints
+        if self.path == "/":
+            # Root endpoint returns plain text
+            self.send_text_response(200, "Ollama is running")
+        elif self.path == "/api":
+            # /api returns 404
+            self.send_text_response(404, "404 page not found")
+        elif self.path == "/api/tags":
+            # List available models
+            self.send_json_response(
+                200,
+                {
+                    "models": [
+                        {
+                            "name": "llama2:latest",
+                            "modified_at": "2024-01-01T00:00:00Z",
+                            "size": 3826793677,
+                            "digest": "sha256:a2af6cc3eb7fa8be8504abaf9b04e88f17a119ec3f04a3addf55f92841195f5a",
+                            "details": {
+                                "format": "gguf",
+                                "family": "llama",
+                                "families": ["llama"],
+                                "parameter_size": "7B",
+                                "quantization_level": "Q4_0",
+                            },
+                        },
+                        {
+                            "name": "mistral:latest",
+                            "modified_at": "2024-01-01T00:00:00Z",
+                            "size": 4109865159,
+                            "digest": "sha256:b2af6cc3eb7fa8be8504abaf9b04e88f17a119ec3f04a3addf55f92841195f5b",
+                            "details": {
+                                "format": "gguf",
+                                "family": "mistral",
+                                "families": ["mistral"],
+                                "parameter_size": "7B",
+                                "quantization_level": "Q4_0",
+                            },
+                        },
+                    ]
+                },
+            )
+        elif self.path == "/api/ps":
+            # List running models
+            self.send_json_response(
+                200,
+                {
+                    "models": [
+                        {
+                            "model": "llama2:latest",
+                            "size": 3826793677,
+                            "digest": "sha256:a2af6cc3eb7fa8be8504abaf9b04e88f17a119ec3f04a3addf55f92841195f5a",
+                            "details": {
+                                "format": "gguf",
+                                "family": "llama",
+                                "families": ["llama"],
+                                "parameter_size": "7B",
+                                "quantization_level": "Q4_0",
+                            },
+                            "expires_at": datetime.datetime.utcnow().isoformat() + "Z",
+                            "size_vram": 3000000000,
+                        }
+                    ]
+                },
+            )
+        else:
+            self.send_text_response(404, "404 page not found")
+
+    def do_POST(self) -> None:
+        """Handle POST requests"""
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = (
+            self.rfile.read(content_length).decode("utf-8", errors="ignore")
+            if content_length > 0
+            else ""
+        )
+
+        self.log_request_info(body)
+
+        # Parse body for potential prompts
+        try:
+            data = json.loads(body) if body else {}
+        except:
+            data = {}
+
+        # Mimic Ollama API endpoints
+        if self.path == "/api/generate":
+            # Generate completion
+            prompt = data.get("prompt", "")
+            model = data.get("model", "llama2:latest")
+            stream = data.get("stream", True)
+
+            response_text = self.get_response_for_query(prompt)
+
+            # Non-streaming response
+            self.send_json_response(
+                200,
+                {
+                    "model": model,
+                    "created_at": datetime.datetime.utcnow().isoformat() + "Z",
+                    "response": response_text,
+                    "done": True,
+                    "done_reason": "stop",
+                    "total_duration": 5000000000,
+                    "load_duration": 1000000000,
+                    "prompt_eval_count": 10,
+                    "prompt_eval_duration": 2000000000,
+                    "eval_count": 20,
+                    "eval_duration": 2000000000,
+                },
+            )
+
+        elif self.path == "/api/chat":
+            # Chat completion
+            messages = data.get("messages", [])
+            model = data.get("model", "llama2:latest")
+            stream = data.get("stream", True)
+
+            # Extract last user message as query
+            query = ""
+            if messages:
+                for msg in reversed(messages):
+                    if isinstance(msg, dict) and msg.get("role") == "user":
+                        query = msg.get("content", "")
+                        break
+
+            response_text = self.get_response_for_query(query)
+
+            self.send_json_response(
+                200,
+                {
+                    "model": model,
+                    "created_at": datetime.datetime.utcnow().isoformat() + "Z",
+                    "message": {"role": "assistant", "content": response_text},
+                    "done": True,
+                    "done_reason": "stop",
+                    "total_duration": 5000000000,
+                    "load_duration": 1000000000,
+                    "prompt_eval_count": 15,
+                    "prompt_eval_duration": 2000000000,
+                    "eval_count": 25,
+                    "eval_duration": 2000000000,
+                },
+            )
+
+        elif self.path == "/api/embed":
+            # Generate embeddings
+            input_text = data.get("input", "")
+            model = data.get("model", "llama2:latest")
+
+            # Return fake embeddings
+            self.send_json_response(
+                200,
+                {
+                    "model": model,
+                    "embeddings": [
+                        [
+                            0.010071029,
+                            -0.0017594862,
+                            0.05007221,
+                            0.04692972,
+                            0.054916814,
+                        ]
+                    ],
+                    "total_duration": 14143917,
+                    "load_duration": 1019500,
+                    "prompt_eval_count": 8,
+                },
+            )
+
+        elif self.path == "/api/pull":
+            # Pull model
+            model = data.get("model", "")
+            self.send_json_response(200, {"status": "success"})
+
+        elif self.path == "/api/push":
+            # Push model
+            model = data.get("model", "")
+            self.send_json_response(200, {"status": "success"})
+
+        elif self.path == "/api/create":
+            # Create model
+            self.send_json_response(200, {"status": "success"})
+
+        elif self.path == "/api/copy":
+            # Copy model
+            self.send_json_response(200, {"status": "success"})
+
+        elif self.path == "/api/show":
+            # Show model details
+            model = data.get("model", "llama2:latest")
+            self.send_json_response(
+                200,
+                {
+                    "parameters": "temperature 0.7\\nnum_ctx 2048",
+                    "license": "MIT License",
+                    "modified_at": "2024-01-01T00:00:00Z",
+                    "details": {
+                        "parent_model": "",
+                        "format": "gguf",
+                        "family": "llama",
+                        "families": ["llama"],
+                        "parameter_size": "7B",
+                        "quantization_level": "Q4_0",
+                    },
+                    "template": "{{ .Prompt }}",
+                    "capabilities": ["completion"],
+                },
+            )
+
+        else:
+            self.send_json_response(200, {"status": "ok"})
+
+    def do_DELETE(self) -> None:
+        """Handle DELETE requests"""
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = (
+            self.rfile.read(content_length).decode("utf-8", errors="ignore")
+            if content_length > 0
+            else ""
+        )
+        self.log_request_info(body)
+
+        # Mimic DELETE endpoints
+        if self.path == "/api/delete":
+            # Delete model - return 200 with no body
+            self.send_response(200)
+            self.end_headers()
+        else:
+            self.send_text_response(404, "404 page not found")
+
+    def do_PUT(self) -> None:
+        """Handle PUT requests"""
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = (
+            self.rfile.read(content_length).decode("utf-8", errors="ignore")
+            if content_length > 0
+            else ""
+        )
+        self.log_request_info(body)
+        self.send_json_response(200, {"status": "ok"})
+
+
+def load_config(config_file: str = "ollama-honeypot.conf") -> Dict[str, str]:
+    """Load configuration from file"""
+    config = configparser.ConfigParser()
+
+    # Defaults
+    defaults = {"host": "0.0.0.0", "port": "11434", "max_log_length": "1000"}
+
+    if os.path.exists(config_file):
+        config.read(config_file)
+        if "honeypot" in config:
+            return {**defaults, **dict(config["honeypot"])}
+
+    return defaults
+
+
+def load_responses(responses_file: str = "ollama-honeypot.responses") -> Dict[str, str]:
+    """Load responses from file as pattern -> response mapping"""
+    responses: Dict[str, str] = {}
+
+    if os.path.exists(responses_file):
+        with open(responses_file, "r") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    # Format: pattern|response or pattern: response
+                    if "|" in line:
+                        parts = line.split("|", 1)
+                        if len(parts) == 2:
+                            pattern = parts[0].strip().lower()
+                            response = parts[1].strip()
+                            responses[pattern] = response
+                    elif ":" in line:
+                        parts = line.split(":", 1)
+                        if len(parts) == 2:
+                            pattern = parts[0].strip().lower()
+                            response = parts[1].strip()
+                            responses[pattern] = response
+
+    # Default responses if file doesn't exist or is empty
+    if not responses:
+        responses = {
+            "hello": "I'm here to help you with your questions.",
+            "help": "I can assist you with various tasks and information.",
+        }
+
+    return responses
+
+
+def main() -> None:
+    """Main entry point"""
+    # Load configuration
+    config = load_config()
+    responses = load_responses()
+
+    # Set class variables
+    OllamaHoneypot.config = config
+    OllamaHoneypot.responses = responses
+
+    host = config.get("host", "0.0.0.0")
+    port = int(config.get("port", 11434))
+
+    # Start server
+    server = http.server.HTTPServer((host, port), OllamaHoneypot)
+
+    print(f"[HONEYPOT] Ollama Honeypot starting on {host}:{port}", file=sys.stderr)
+    print(f"[HONEYPOT] Loaded {len(responses)} responses", file=sys.stderr)
+
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\n[HONEYPOT] Shutting down...", file=sys.stderr)
+        server.shutdown()
+
+
+if __name__ == "__main__":
+    main()
