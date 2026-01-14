@@ -1,5 +1,8 @@
 # Virtual environment
 venv/
+.venv/
+env/
+.env/
 __pycache__/
 *.pyc
 *.pyo
@@ -11,10 +14,26 @@ __pycache__/
 .idea/
 *.swp
 *.swo
+*.sublime-*
 
 # Logs
 *.log
+logs/
 
 # OS
 .DS_Store
 Thumbs.db
+.AppleDouble
+.LSOverride
+
+# Claude Code local settings
+.claude/
+
+# Environment and secrets
+.env
+.env.*
+*.local
+secrets.*
+
+# Fly.io local state
+.fly/
