@@ -9,6 +9,7 @@ primary_region = 'sjc'
 
   [[services.ports]]
     port = 11434
+    handlers = ["proxy_proto"]
 
 [[vm]]
   memory = '256mb'

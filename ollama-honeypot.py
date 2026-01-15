@@ -10,9 +10,106 @@ import datetime
 import configparser
 import random
 import os
+import socket
+import io
 from urllib.parse import urlparse, parse_qs
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
 import re
+
+
+class ProxyProtocolSocket:
+    """Wrapper socket that reads PROXY protocol header and provides real client IP"""
+
+    def __init__(self, sock: socket.socket):
+        self._sock = sock
+        self._buffer = b""
+        self.proxy_client_ip: Optional[str] = None
+        self.proxy_client_port: Optional[int] = None
+        self._parse_proxy_protocol()
+
+    def _parse_proxy_protocol(self) -> None:
+        """Parse PROXY protocol v1 header from the start of the connection"""
+        # Read until we get \r\n (end of PROXY protocol v1 header)
+        while b"\r\n" not in self._buffer:
+            chunk = self._sock.recv(1024)
+            if not chunk:
+                break
+            self._buffer += chunk
+
+        if b"\r\n" in self._buffer:
+            header_end = self._buffer.index(b"\r\n") + 2
+            header = self._buffer[:header_end].decode("utf-8", errors="ignore")
+            self._buffer = self._buffer[header_end:]
+
+            # Parse: PROXY TCP4 <src_ip> <dst_ip> <src_port> <dst_port>
+            parts = header.strip().split()
+            if len(parts) >= 6 and parts[0] == "PROXY" and parts[1] in ("TCP4", "TCP6"):
+                self.proxy_client_ip = parts[2]
+                try:
+                    self.proxy_client_port = int(parts[4])
+                except ValueError:
+                    pass
+
+    def recv(self, bufsize: int, flags: int = 0) -> bytes:
+        """Return buffered data first, then read from socket"""
+        if self._buffer:
+            data = self._buffer[:bufsize]
+            self._buffer = self._buffer[bufsize:]
+            return data
+        return self._sock.recv(bufsize, flags)
+
+    def makefile(self, mode: str = "r", buffering: int = -1) -> Any:
+        """Create a file-like object, prepending any buffered data"""
+        if self._buffer:
+            # Create a combined stream with buffer + socket
+            return _BufferedSocketFile(self._buffer, self._sock, mode, buffering)
+        return self._sock.makefile(mode, buffering)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._sock, name)
+
+
+class _BufferedSocketFile:
+    """File-like wrapper that serves buffered data before socket data"""
+
+    def __init__(self, buffer: bytes, sock: socket.socket, mode: str, buffering: int):
+        self._buffer = io.BytesIO(buffer)
+        self._sockfile = sock.makefile(mode, buffering)
+        self._buffer_exhausted = False
+
+    def read(self, size: int = -1) -> bytes:
+        if not self._buffer_exhausted:
+            data = self._buffer.read(size)
+            if data:
+                return data
+            self._buffer_exhausted = True
+        return self._sockfile.read(size)
+
+    def readline(self, size: int = -1) -> bytes:
+        if not self._buffer_exhausted:
+            line = self._buffer.readline(size)
+            if line:
+                return line
+            self._buffer_exhausted = True
+        return self._sockfile.readline(size)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._sockfile, name)
+
+
+class ProxyProtocolHTTPServer(http.server.HTTPServer):
+    """HTTP server that handles PROXY protocol connections"""
+
+    def get_request(self) -> Tuple[socket.socket, Any]:
+        """Accept connection and wrap with PROXY protocol parser"""
+        sock, addr = self.socket.accept()
+        proxy_sock = ProxyProtocolSocket(sock)
+
+        # If we got a real client IP from PROXY protocol, use it
+        if proxy_sock.proxy_client_ip:
+            addr = (proxy_sock.proxy_client_ip, proxy_sock.proxy_client_port or addr[1])
+
+        return proxy_sock, addr
 
 
 class OllamaHoneypot(http.server.BaseHTTPRequestHandler):
@@ -46,10 +143,25 @@ class OllamaHoneypot(http.server.BaseHTTPRequestHandler):
 
         return sanitized
 
+    def get_client_ip(self) -> str:
+        """Get real client IP, checking proxy headers first (for fly.io)"""
+        # Fly.io sets Fly-Client-IP header with the real client IP
+        fly_client_ip = self.headers.get("Fly-Client-IP")
+        if fly_client_ip:
+            return fly_client_ip
+
+        # Fallback to X-Forwarded-For (first IP in the chain is the client)
+        x_forwarded_for = self.headers.get("X-Forwarded-For")
+        if x_forwarded_for:
+            return x_forwarded_for.split(",")[0].strip()
+
+        # Default to direct connection IP
+        return self.client_address[0]
+
     def log_request_info(self, body: Optional[str] = None) -> None:
         """Log request details to STDOUT in single-line format"""
         timestamp = datetime.datetime.utcnow().isoformat() + "Z"
-        client_ip = self.client_address[0]
+        client_ip = self.get_client_ip()
         method = self.command
         path = self.path
         headers = dict(self.headers)
@@ -455,8 +567,8 @@ def main() -> None:
     host = config.get("host", "0.0.0.0")
     port = int(config.get("port", 11434))
 
-    # Start server
-    server = http.server.HTTPServer((host, port), OllamaHoneypot)
+    # Start server with PROXY protocol support (for fly.io)
+    server = ProxyProtocolHTTPServer((host, port), OllamaHoneypot)
 
     print(f"[HONEYPOT] Ollama Honeypot starting on {host}:{port}", file=sys.stderr)
     print(f"[HONEYPOT] Loaded {len(responses)} responses", file=sys.stderr)
