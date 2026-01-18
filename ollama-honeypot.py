@@ -9,6 +9,7 @@ import sys
 import datetime
 import configparser
 import random
+import time
 import os
 import socket
 import io
@@ -186,10 +187,33 @@ class OllamaHoneypot(http.server.BaseHTTPRequestHandler):
         # Output single-line JSON
         print(json.dumps(log_entry), flush=True)
 
+    # Generic LLM-style responses for unknown queries
+    GENERIC_RESPONSES = [
+        "I'd be happy to help you with that. Could you provide more details about what you're looking for?",
+        "That's an interesting question. Let me think about this for a moment. Based on my understanding, I would suggest exploring this topic further by breaking it down into smaller components.",
+        "I understand what you're asking. While I can provide some general guidance, I'd recommend being more specific about your particular use case.",
+        "Thank you for your question. I'll do my best to assist you with this. The topic you've mentioned has several aspects worth considering.",
+        "I appreciate you reaching out. This is something I can help with. Let me share some thoughts on the matter.",
+        "That's a great question! There are multiple ways to approach this. Would you like me to elaborate on any specific aspect?",
+        "I see what you're asking about. Let me provide some context that might be helpful for your situation.",
+        "Interesting query! I'd be glad to assist. Could you clarify what specific outcome you're hoping to achieve?",
+        "I'm here to help with that. Based on the information provided, here are some initial thoughts to consider.",
+        "Thank you for bringing this up. This is an area where I can offer some guidance. Let me share my perspective.",
+    ]
+
+    def simulate_inference_delay(self) -> None:
+        """Add realistic delay to simulate LLM inference time"""
+        # Random delay between 0.5 and 2.5 seconds
+        delay = random.uniform(0.5, 2.5)
+        time.sleep(delay)
+
     def get_response_for_query(self, query: str) -> str:
-        """Get response based on query pattern matching"""
+        """Get response based on query pattern matching with realistic delays"""
+        # Simulate LLM inference time
+        self.simulate_inference_delay()
+
         if not query:
-            return "I'm here to assist you with your queries."
+            return random.choice(self.GENERIC_RESPONSES)
 
         query_lower = query.lower().strip()
 
@@ -202,8 +226,8 @@ class OllamaHoneypot(http.server.BaseHTTPRequestHandler):
             if pattern in query_lower or query_lower in pattern:
                 return response
 
-        # Default response if no match found
-        return "I'm here to assist you with your queries."
+        # Return a random generic LLM-style response
+        return random.choice(self.GENERIC_RESPONSES)
 
     def send_json_response(self, status_code: int, data: Dict[str, Any]) -> None:
         """Send JSON response"""
@@ -219,6 +243,107 @@ class OllamaHoneypot(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(text)))
         self.end_headers()
         self.wfile.write(text.encode())
+
+    def tokenize_response(self, text: str) -> List[str]:
+        """Split response into tokens similar to LLM output"""
+        # Split on word boundaries, keeping punctuation as separate tokens
+        tokens = []
+        current = ""
+        for char in text:
+            if char in " \t\n":
+                if current:
+                    tokens.append(current)
+                    current = ""
+                if char == " ":
+                    # Add space to next token
+                    current = " "
+                elif char == "\n":
+                    tokens.append("\n")
+            elif char in ".,!?;:\"'()[]{}":
+                if current and current != " ":
+                    tokens.append(current)
+                    current = ""
+                tokens.append(char)
+            else:
+                current += char
+        if current:
+            tokens.append(current)
+        return tokens
+
+    def send_streaming_generate_response(self, model: str, response_text: str) -> None:
+        """Send response as streaming tokens for /api/generate"""
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-ndjson")
+        self.end_headers()
+
+        tokens = self.tokenize_response(response_text)
+        token_count = len(tokens)
+
+        for token in tokens:
+            chunk = {
+                "model": model,
+                "created_at": datetime.datetime.utcnow().isoformat() + "Z",
+                "response": token,
+                "done": False,
+            }
+            self.wfile.write((json.dumps(chunk) + "\n").encode())
+            self.wfile.flush()
+            time.sleep(random.uniform(0.015, 0.025))
+
+        # Final message with stats
+        final = {
+            "model": model,
+            "created_at": datetime.datetime.utcnow().isoformat() + "Z",
+            "response": "",
+            "done": True,
+            "done_reason": "stop",
+            "context": [random.randint(100, 30000) for _ in range(20)],
+            "total_duration": random.randint(300000000, 500000000),
+            "load_duration": random.randint(20000000, 50000000),
+            "prompt_eval_count": random.randint(10, 30),
+            "prompt_eval_duration": random.randint(100000000, 300000000),
+            "eval_count": token_count,
+            "eval_duration": random.randint(30000000, 100000000),
+        }
+        self.wfile.write((json.dumps(final) + "\n").encode())
+        self.wfile.flush()
+
+    def send_streaming_chat_response(self, model: str, response_text: str) -> None:
+        """Send response as streaming tokens for /api/chat"""
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-ndjson")
+        self.end_headers()
+
+        tokens = self.tokenize_response(response_text)
+        token_count = len(tokens)
+
+        for token in tokens:
+            chunk = {
+                "model": model,
+                "created_at": datetime.datetime.utcnow().isoformat() + "Z",
+                "message": {"role": "assistant", "content": token},
+                "done": False,
+            }
+            self.wfile.write((json.dumps(chunk) + "\n").encode())
+            self.wfile.flush()
+            time.sleep(random.uniform(0.015, 0.025))
+
+        # Final message with stats
+        final = {
+            "model": model,
+            "created_at": datetime.datetime.utcnow().isoformat() + "Z",
+            "message": {"role": "assistant", "content": ""},
+            "done": True,
+            "done_reason": "stop",
+            "total_duration": random.randint(300000000, 500000000),
+            "load_duration": random.randint(20000000, 50000000),
+            "prompt_eval_count": random.randint(10, 30),
+            "prompt_eval_duration": random.randint(100000000, 300000000),
+            "eval_count": token_count,
+            "eval_duration": random.randint(30000000, 100000000),
+        }
+        self.wfile.write((json.dumps(final) + "\n").encode())
+        self.wfile.flush()
 
     def do_GET(self) -> None:
         """Handle GET requests"""
@@ -289,6 +414,28 @@ class OllamaHoneypot(http.server.BaseHTTPRequestHandler):
                     ]
                 },
             )
+        elif self.path == "/v1/models":
+            # OpenAI-compatible models endpoint
+            self.send_json_response(
+                200,
+                {
+                    "object": "list",
+                    "data": [
+                        {
+                            "id": "llama2:latest",
+                            "object": "model",
+                            "created": 1704067200,
+                            "owned_by": "library",
+                        },
+                        {
+                            "id": "mistral:latest",
+                            "object": "model",
+                            "created": 1704067200,
+                            "owned_by": "library",
+                        },
+                    ],
+                },
+            )
         else:
             self.send_text_response(404, "404 page not found")
 
@@ -318,23 +465,27 @@ class OllamaHoneypot(http.server.BaseHTTPRequestHandler):
 
             response_text = self.get_response_for_query(prompt)
 
-            # Non-streaming response
-            self.send_json_response(
-                200,
-                {
-                    "model": model,
-                    "created_at": datetime.datetime.utcnow().isoformat() + "Z",
-                    "response": response_text,
-                    "done": True,
-                    "done_reason": "stop",
-                    "total_duration": 5000000000,
-                    "load_duration": 1000000000,
-                    "prompt_eval_count": 10,
-                    "prompt_eval_duration": 2000000000,
-                    "eval_count": 20,
-                    "eval_duration": 2000000000,
-                },
-            )
+            if stream:
+                # Streaming response (default)
+                self.send_streaming_generate_response(model, response_text)
+            else:
+                # Non-streaming response
+                self.send_json_response(
+                    200,
+                    {
+                        "model": model,
+                        "created_at": datetime.datetime.utcnow().isoformat() + "Z",
+                        "response": response_text,
+                        "done": True,
+                        "done_reason": "stop",
+                        "total_duration": 5000000000,
+                        "load_duration": 1000000000,
+                        "prompt_eval_count": 10,
+                        "prompt_eval_duration": 2000000000,
+                        "eval_count": 20,
+                        "eval_duration": 2000000000,
+                    },
+                )
 
         elif self.path == "/api/chat":
             # Chat completion
@@ -352,22 +503,25 @@ class OllamaHoneypot(http.server.BaseHTTPRequestHandler):
 
             response_text = self.get_response_for_query(query)
 
-            self.send_json_response(
-                200,
-                {
-                    "model": model,
-                    "created_at": datetime.datetime.utcnow().isoformat() + "Z",
-                    "message": {"role": "assistant", "content": response_text},
-                    "done": True,
-                    "done_reason": "stop",
-                    "total_duration": 5000000000,
-                    "load_duration": 1000000000,
-                    "prompt_eval_count": 15,
-                    "prompt_eval_duration": 2000000000,
-                    "eval_count": 25,
-                    "eval_duration": 2000000000,
-                },
-            )
+            if stream:
+                self.send_streaming_chat_response(model, response_text)
+            else:
+                self.send_json_response(
+                    200,
+                    {
+                        "model": model,
+                        "created_at": datetime.datetime.utcnow().isoformat() + "Z",
+                        "message": {"role": "assistant", "content": response_text},
+                        "done": True,
+                        "done_reason": "stop",
+                        "total_duration": 5000000000,
+                        "load_duration": 1000000000,
+                        "prompt_eval_count": 15,
+                        "prompt_eval_duration": 2000000000,
+                        "eval_count": 25,
+                        "eval_duration": 2000000000,
+                    },
+                )
 
         elif self.path == "/api/embed":
             # Generate embeddings
@@ -431,6 +585,97 @@ class OllamaHoneypot(http.server.BaseHTTPRequestHandler):
                     },
                     "template": "{{ .Prompt }}",
                     "capabilities": ["completion"],
+                },
+            )
+
+        elif self.path == "/v1/chat/completions":
+            # OpenAI-compatible chat completions
+            messages = data.get("messages", [])
+            model = data.get("model", "llama2:latest")
+
+            # Extract last user message as query
+            query = ""
+            if messages:
+                for msg in reversed(messages):
+                    if isinstance(msg, dict) and msg.get("role") == "user":
+                        query = msg.get("content", "")
+                        break
+
+            response_text = self.get_response_for_query(query)
+            timestamp = int(datetime.datetime.utcnow().timestamp())
+
+            self.send_json_response(
+                200,
+                {
+                    "id": f"chatcmpl-{timestamp}",
+                    "object": "chat.completion",
+                    "created": timestamp,
+                    "model": model,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {"role": "assistant", "content": response_text},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {
+                        "prompt_tokens": 15,
+                        "completion_tokens": 25,
+                        "total_tokens": 40,
+                    },
+                },
+            )
+
+        elif self.path == "/v1/completions":
+            # OpenAI-compatible text completions
+            prompt = data.get("prompt", "")
+            model = data.get("model", "llama2:latest")
+
+            response_text = self.get_response_for_query(prompt)
+            timestamp = int(datetime.datetime.utcnow().timestamp())
+
+            self.send_json_response(
+                200,
+                {
+                    "id": f"cmpl-{timestamp}",
+                    "object": "text_completion",
+                    "created": timestamp,
+                    "model": model,
+                    "choices": [
+                        {
+                            "text": response_text,
+                            "index": 0,
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {
+                        "prompt_tokens": 10,
+                        "completion_tokens": 20,
+                        "total_tokens": 30,
+                    },
+                },
+            )
+
+        elif self.path == "/v1/embeddings":
+            # OpenAI-compatible embeddings
+            model = data.get("model", "llama2:latest")
+
+            # Return fake 1536-dimensional embedding (OpenAI ada-002 size)
+            fake_embedding = [0.001 * i for i in range(1536)]
+
+            self.send_json_response(
+                200,
+                {
+                    "object": "list",
+                    "data": [
+                        {
+                            "object": "embedding",
+                            "index": 0,
+                            "embedding": fake_embedding,
+                        }
+                    ],
+                    "model": model,
+                    "usage": {"prompt_tokens": 8, "total_tokens": 8},
                 },
             )
 
