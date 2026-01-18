@@ -364,10 +364,12 @@ class OllamaHoneypot(http.server.BaseHTTPRequestHandler):
                     "models": [
                         {
                             "name": "llama2:latest",
-                            "modified_at": "2024-01-01T00:00:00Z",
+                            "model": "llama2:latest",
+                            "modified_at": "2024-12-15T10:30:00.000000Z",
                             "size": 3826793677,
-                            "digest": "sha256:a2af6cc3eb7fa8be8504abaf9b04e88f17a119ec3f04a3addf55f92841195f5a",
+                            "digest": "sha256:78e26419b4469263f75331927a00a0284ef6544c1975b826b15abdaef17bb962",
                             "details": {
+                                "parent_model": "",
                                 "format": "gguf",
                                 "family": "llama",
                                 "families": ["llama"],
@@ -377,10 +379,12 @@ class OllamaHoneypot(http.server.BaseHTTPRequestHandler):
                         },
                         {
                             "name": "mistral:latest",
-                            "modified_at": "2024-01-01T00:00:00Z",
+                            "model": "mistral:latest",
+                            "modified_at": "2024-12-10T08:15:00.000000Z",
                             "size": 4109865159,
-                            "digest": "sha256:b2af6cc3eb7fa8be8504abaf9b04e88f17a119ec3f04a3addf55f92841195f5b",
+                            "digest": "sha256:f974a74358d686bdc92c40cfc2a5b6b66e6b14ec4fdec8fbeb7c2a85fcef80f6",
                             "details": {
+                                "parent_model": "",
                                 "format": "gguf",
                                 "family": "mistral",
                                 "families": ["mistral"],
@@ -393,27 +397,36 @@ class OllamaHoneypot(http.server.BaseHTTPRequestHandler):
             )
         elif self.path == "/api/ps":
             # List running models
+            # Set expiry 5 minutes in the future (realistic keepalive)
+            expires = (
+                datetime.datetime.utcnow() + datetime.timedelta(minutes=5)
+            ).isoformat() + "Z"
             self.send_json_response(
                 200,
                 {
                     "models": [
                         {
+                            "name": "llama2:latest",
                             "model": "llama2:latest",
                             "size": 3826793677,
-                            "digest": "sha256:a2af6cc3eb7fa8be8504abaf9b04e88f17a119ec3f04a3addf55f92841195f5a",
+                            "digest": "sha256:78e26419b4469263f75331927a00a0284ef6544c1975b826b15abdaef17bb962",
                             "details": {
+                                "parent_model": "",
                                 "format": "gguf",
                                 "family": "llama",
                                 "families": ["llama"],
                                 "parameter_size": "7B",
                                 "quantization_level": "Q4_0",
                             },
-                            "expires_at": datetime.datetime.utcnow().isoformat() + "Z",
-                            "size_vram": 3000000000,
+                            "expires_at": expires,
+                            "size_vram": 3826793677,
                         }
                     ]
                 },
             )
+        elif self.path == "/api/version":
+            # Version endpoint - critical for scanner detection
+            self.send_json_response(200, {"version": "0.5.4"})
         elif self.path == "/v1/models":
             # OpenAI-compatible models endpoint
             self.send_json_response(
@@ -567,23 +580,59 @@ class OllamaHoneypot(http.server.BaseHTTPRequestHandler):
             self.send_json_response(200, {"status": "success"})
 
         elif self.path == "/api/show":
-            # Show model details
+            # Show model details - must include modelfile and model_info
             model = data.get("model", "llama2:latest")
+
+            # Model-specific details
+            if "mistral" in model.lower():
+                family = "mistral"
+                template = "[INST] {{ .Prompt }} [/INST]"
+                modelfile = 'FROM mistral:latest\nPARAMETER temperature 0.7\nPARAMETER num_ctx 4096\nSYSTEM """You are a helpful AI assistant."""'
+                model_info = {
+                    "general.architecture": "mistral",
+                    "general.file_type": 2,
+                    "general.parameter_count": 7241732096,
+                    "general.quantization_version": 2,
+                    "mistral.attention.head_count": 32,
+                    "mistral.attention.head_count_kv": 8,
+                    "mistral.block_count": 32,
+                    "mistral.context_length": 32768,
+                    "mistral.embedding_length": 4096,
+                    "mistral.feed_forward_length": 14336,
+                }
+            else:
+                family = "llama"
+                template = "[INST] <<SYS>>\n{{ .System }}\n<</SYS>>\n\n{{ .Prompt }} [/INST]"
+                modelfile = 'FROM llama2:latest\nPARAMETER temperature 0.7\nPARAMETER num_ctx 4096\nSYSTEM """You are a helpful AI assistant."""'
+                model_info = {
+                    "general.architecture": "llama",
+                    "general.file_type": 2,
+                    "general.parameter_count": 6738415616,
+                    "general.quantization_version": 2,
+                    "llama.attention.head_count": 32,
+                    "llama.attention.head_count_kv": 32,
+                    "llama.block_count": 32,
+                    "llama.context_length": 4096,
+                    "llama.embedding_length": 4096,
+                    "llama.feed_forward_length": 11008,
+                }
+
             self.send_json_response(
                 200,
                 {
-                    "parameters": "temperature 0.7\\nnum_ctx 2048",
-                    "license": "MIT License",
-                    "modified_at": "2024-01-01T00:00:00Z",
+                    "modelfile": modelfile,
+                    "parameters": "temperature 0.7\nnum_ctx 4096",
+                    "template": template,
                     "details": {
                         "parent_model": "",
                         "format": "gguf",
-                        "family": "llama",
-                        "families": ["llama"],
+                        "family": family,
+                        "families": [family],
                         "parameter_size": "7B",
                         "quantization_level": "Q4_0",
                     },
-                    "template": "{{ .Prompt }}",
+                    "model_info": model_info,
+                    "modified_at": "2024-12-15T10:30:00.000000Z",
                     "capabilities": ["completion"],
                 },
             )
